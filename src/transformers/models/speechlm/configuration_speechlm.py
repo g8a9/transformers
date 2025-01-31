@@ -31,6 +31,9 @@ class SpeechLMConfig(PretrainedConfig):
         self.decoder = AutoConfig.from_pretrained(kwargs.pop("decoder"))
         self.is_encoder_decoder = True
 
+        self.decoder_start_token_id = self.decoder.bos_token_id
+        self.pad_token_id = self.decoder.eos_token_id
+
     # @classmethod
     # def from_encoder_decoder_configs(
     #     cls,
