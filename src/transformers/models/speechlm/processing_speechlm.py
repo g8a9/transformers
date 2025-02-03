@@ -23,6 +23,7 @@ from ...processing_utils import ProcessingKwargs, ProcessorMixin, Unpack
 from ...tokenization_utils_base import AudioInput, PreTokenizedInput, TextInput
 from ..seamless_m4t.feature_extraction_seamless_m4t import SeamlessM4TFeatureExtractor
 from ..wav2vec2.tokenization_wav2vec2 import Wav2Vec2CTCTokenizer
+from ..llama.tokenization_llama import LlamaTokenizer
 from ... import AutoTokenizer
 from tokenizers import AddedToken
 import torch
@@ -65,7 +66,7 @@ class SpeechLMProcessor(ProcessorMixin):
         super().__init__(feature_extractor, tokenizer)
 
     @classmethod
-    def from_pretrained(
+    def from_encoder_decoder_pretrained(
         cls, audio_model_name_or_path, text_model_name_or_path, **kwargs
     ):
         # try:
@@ -90,8 +91,9 @@ class SpeechLMProcessor(ProcessorMixin):
             *list(cls.lang2token.values()),
         ]
 
-        tokenizer.add_tokens(additional_tokens)
+        tokenizer.add_tokens(additional_tokens, special_tokens=True)
         tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.padding_side = "left"
 
         return cls(feature_extractor=feature_extractor, tokenizer=tokenizer)
 
@@ -113,9 +115,9 @@ class SpeechLMProcessor(ProcessorMixin):
     def __call__(
         self,
         audio: AudioInput,
-        text: Optional[Union[str, List[str], TextInput, PreTokenizedInput]],
         task: str,
         lang: str,
+        text: Optional[Union[str, List[str], TextInput, PreTokenizedInput]] = None,
         **kwargs,
     ):
         """
@@ -135,22 +137,20 @@ class SpeechLMProcessor(ProcessorMixin):
         # if audio is not None:
         audio_inputs = self.feature_extractor(audio, **output_kwargs["audio_kwargs"])
 
-        # if text is not None:
-        text_inputs = self.tokenizer(text, **output_kwargs["text_kwargs"])
+        if text is not None:
+            text_inputs = self.tokenizer(text, **output_kwargs["text_kwargs"])
+        else:
+            text_inputs = {
+                "input_ids": [[self.tokenizer.bos_token_id]],
+                "attention_mask": [[1]],
+            }
+
         text_inputs = self._add_lang_task_tokens(text_inputs, lang, task)
 
         merged_inputs = {
             **{f"audio_{k}": v for k, v in audio_inputs.items()},
             **{f"text_{k}": v for k, v in text_inputs.items()},
         }
-
-        # if text is None:
-        #     return inputs
-        # elif audio is None:
-        #     return encodings
-        # else:
-        #     inputs["labels"] = encodings["input_ids"]
-        #     return inputs
 
         return merged_inputs
 

@@ -34,6 +34,20 @@ from ..auto.configuration_auto import AutoConfig
 from ..auto.modeling_auto import AutoModel, AutoModelForCausalLM
 from .configuration_speechlm import SpeechLMConfig
 
+# from ...generation import (
+#     GenerateDecoderOnlyOutput,
+#     ConfidenceCriteria,
+#     EosTokenCriteria,
+#     MaxLengthCriteria,
+#     MaxTimeCriteria,
+#     StoppingCriteria,
+#     StoppingCriteriaList,
+#     StopStringCriteria,
+#     LogitsProcessorList,
+# )
+
+#  from flash_perceiver import Perceiver
+
 logger = logging.get_logger(__name__)
 
 # _CONFIG_FOR_DOC = "SpeechEncoderDecoderConfig"
@@ -201,6 +215,8 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
     _supports_flash_attn_2 = True
     _supports_sdpa = True
 
+    loss_type = "ForCausalLM"
+
     def __init__(
         self,
         config: Optional[PretrainedConfig] = None,
@@ -211,50 +227,40 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
             raise ValueError(
                 "Either a configuration or an encoder and a decoder has to be provided."
             )
-
-        # if config is None:
-        # config = SpeechEncoderDecoderConfig.from_encoder_decoder_configs(
-        #     encoder.config, decoder.config
-        # )
-        # else:
-        # if not isinstance(config, self.config_class):
-        #     raise ValueError(
-        #         f"Config: {config} has to be of type {self.config_class}"
-        #     )
-
-        # if config.decoder.cross_attention_hidden_size is not None:
-        #     if config.decoder.cross_attention_hidden_size != config.encoder.hidden_size:
-        #         raise ValueError(
-        #             "If `cross_attention_hidden_size` is specified in the decoder's configuration, it has to be equal"
-        #             f" to the encoder's `hidden_size`. Got {config.decoder.cross_attention_hidden_size} for"
-        #             f" `config.decoder.cross_attention_hidden_size` and {config.encoder.hidden_size} for"
-        #             " `config.encoder.hidden_size`."
-        # )
+        if config is None:
+            config = SpeechLMForConditionalGeneration.from_encoder_decoder_configs(
+                encoder.config, decoder.config
+            )
+        else:
+            if not isinstance(config, self.config_class):
+                raise ValueError(
+                    f"Config: {config} has to be of type {self.config_class}"
+                )
 
         # initialize with config
         # make sure input & output embeddings is not tied
         config.tie_word_embeddings = False
         super().__init__(config)
 
-        # if encoder is None:
-        #     encoder = AutoModel.from_config(config.encoder)
+        if encoder is None:
+            encoder = AutoModel.from_config(config.encoder)
 
-        # if decoder is None:
-        #     decoder = AutoModelForCausalLM.from_config(config.decoder)
+        if decoder is None:
+            decoder = AutoModelForCausalLM.from_config(config.decoder)
 
         self.encoder = encoder
         self.decoder = decoder
 
-        # if self.encoder.config.to_dict() != self.config.encoder.to_dict():
-        #     logger.warning(
-        #         f"Config of the encoder: {self.encoder.__class__} is overwritten by shared encoder config:"
-        #         f" {self.config.encoder}"
-        #     )
-        # if self.decoder.config.to_dict() != self.config.decoder.to_dict():
-        #     logger.warning(
-        #         f"Config of the decoder: {self.decoder.__class__} is overwritten by shared decoder config:"
-        #         f" {self.config.decoder}"
-        #     )
+        if self.encoder.config.to_dict() != self.config.encoder.to_dict():
+            logger.warning(
+                f"Config of the encoder: {self.encoder.__class__} is overwritten by shared encoder config:"
+                f" {self.config.encoder}"
+            )
+        if self.decoder.config.to_dict() != self.config.decoder.to_dict():
+            logger.warning(
+                f"Config of the decoder: {self.decoder.__class__} is overwritten by shared decoder config:"
+                f" {self.config.decoder}"
+            )
 
         # make sure that the individual model's config refers to the shared config
         # so that the updates to the config will be synced
@@ -271,15 +277,43 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
         self.encoder_output_dim = getattr(
             config.encoder, "output_hidden_size", config.encoder.hidden_size
         )
-        if (
-            self.encoder_output_dim
-            != self.decoder.config.hidden_size
-            # and self.decoder.config.cross_attention_hidden_size is None
-        ):
-            # encoder outputs might need to be projected to different dimension for decoder
-            self.enc_to_dec_proj = nn.Linear(
-                self.encoder.config.hidden_size, self.decoder.config.hidden_size
-            )
+
+        ####################################
+        # MODALITY AND LENGTH ADAPTER
+        # TODO: be back at this with better strategies
+        ####################################
+        self.enc_to_dec_proj = nn.Linear(
+            self.encoder.config.hidden_size, self.decoder.config.hidden_size
+        )
+        # if self.config.adapter_type == "linear":
+        #     # encoder outputs might need to be projected to different dimension for decoder
+        # elif self.config.adapter_type == "perceiver":
+
+        #     self.enc_to_dec_proj = Perceiver(
+        #         input_dim=self.encoder.config.hidden_size,
+        #         depth=2,
+        #         # output_dim=self.decoder.config.hidden_size,
+        #         num_latents=self.config.num_latents,
+        #         latent_dim=self.decoder.config.hidden_size,
+        #         cross_heads=1,
+        #         cross_head_dim=64,
+        #         cross_rotary_emb_dim=0,
+        #         cross_attn_dropout=0.0,
+        #         latent_heads=8,
+        #         latent_head_dim=64,
+        #         latent_rotary_emb_dim=0,
+        #         latent_attn_dropout=0.0,
+        #         weight_tie_layers=False,
+        #         gated_mlp=True,
+        #         self_per_cross_attn=1,
+        #         num_zero_tokens=None,
+        #         use_flash_attn=False,
+        #     )
+
+        # else:
+        #     raise ValueError(
+        #         f"Adapter type {self.config.adapter_type} not supported. Please use 'linear' or 'perceiver'."
+        #     )
 
         if self.encoder.get_output_embeddings() is not None:
             raise ValueError(
@@ -309,197 +343,156 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
         self.encoder.freeze_feature_encoder()
 
     @classmethod
-    def from_pretrained(
-        cls, audio_model_name_or_path, text_model_name_or_path, **kwargs
-    ):
+    def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
         # At the moment fast initialization is not supported for composite models
-        # if kwargs.get("_fast_init", False):
-        #     logger.warning(
-        #         "Fast initialization is currently not supported for SpeechEncoderDecoderModel. "
-        #         "Falling back to slow initialization..."
-        #     )
-        # kwargs["_fast_init"] = False
-        config = SpeechLMConfig(
-            encoder=audio_model_name_or_path, decoder=text_model_name_or_path, **kwargs
+        if kwargs.get("_fast_init", False):
+            logger.warning(
+                "Fast initialization is currently not supported for SpeechEncoderDecoderModel. "
+                "Falling back to slow initialization..."
+            )
+        kwargs["_fast_init"] = False
+
+        return super().from_pretrained(
+            pretrained_model_name_or_path, *model_args, **kwargs
         )
-        encoder = AutoModel.from_pretrained(audio_model_name_or_path, **kwargs)
-        decoder = AutoModelForCausalLM.from_pretrained(
-            text_model_name_or_path, **kwargs
+
+    @classmethod
+    def from_encoder_decoder_pretrained(
+        cls,
+        encoder_pretrained_model_name_or_path: str = None,
+        decoder_pretrained_model_name_or_path: str = None,
+        *model_args,
+        **kwargs,
+    ) -> PreTrainedModel:
+        # r"""
+        # Instantiate an encoder and a decoder from one or two base classes of the library from pretrained model
+        # checkpoints.
+
+        # The model is set in evaluation mode by default using `model.eval()` (Dropout modules are deactivated). To train
+        # the model, you need to first set it back in training mode with `model.train()`.
+
+        # Params:
+        #     encoder_pretrained_model_name_or_path (`str`, *optional*):
+        #         Information necessary to initiate the encoder. Can be either:
+
+        #             - A string, the *model id* of a pretrained model hosted inside a model repo on huggingface.co.
+        #             - A path to a *directory* containing model weights saved using
+        #               [`~PreTrainedModel.save_pretrained`], e.g., `./my_model_directory/`.
+        #             - A path or url to a *tensorflow index checkpoint file* (e.g, `./tf_model/model.ckpt.index`). In
+        #               this case, `from_tf` should be set to `True` and a configuration object should be provided as
+        #               `config` argument. This loading path is slower than converting the TensorFlow checkpoint in a
+        #               PyTorch model using the provided conversion scripts and loading the PyTorch model afterwards.
+
+        #     decoder_pretrained_model_name_or_path (`str`, *optional*, defaults to `None`):
+        #         Information necessary to initiate the decoder. Can be either:
+
+        #             - A string, the *model id* of a pretrained model hosted inside a model repo on huggingface.co.
+        #             - A path to a *directory* containing model weights saved using
+        #               [`~PreTrainedModel.save_pretrained`], e.g., `./my_model_directory/`.
+        #             - A path or url to a *tensorflow index checkpoint file* (e.g, `./tf_model/model.ckpt.index`). In
+        #               this case, `from_tf` should be set to `True` and a configuration object should be provided as
+        #               `config` argument. This loading path is slower than converting the TensorFlow checkpoint in a
+        #               PyTorch model using the provided conversion scripts and loading the PyTorch model afterwards.
+
+        #     model_args (remaining positional arguments, *optional*):
+        #         All remaning positional arguments will be passed to the underlying model's `__init__` method.
+
+        #     kwargs (remaining dictionary of keyword arguments, *optional*):
+        #         Can be used to update the configuration object (after it being loaded) and initiate the model (e.g.,
+        #         `output_attentions=True`).
+
+        #         - To update the encoder configuration, use the prefix *encoder_* for each configuration parameter.
+        #         - To update the decoder configuration, use the prefix *decoder_* for each configuration parameter.
+        #         - To update the parent model configuration, do not use a prefix for each configuration parameter.
+
+        #         Behaves differently depending on whether a `config` is provided or automatically loaded.
+
+        # Example:
+
+        # ```python
+        # >>> from transformers import SpeechEncoderDecoderModel
+
+        # >>> # initialize a wav2vec2bert from a pretrained Wav2Vec2 and a pretrained BERT model. Note that the cross-attention layers will be randomly initialized
+        # >>> model = SpeechEncoderDecoderModel.from_encoder_decoder_pretrained(
+        # ...     "facebook/wav2vec2-base-960h", "google-bert/bert-base-uncased"
+        # ... )
+        # >>> # saving model after fine-tuning
+        # >>> model.save_pretrained("./wav2vec2bert")
+        # >>> # load fine-tuned model
+        # >>> model = SpeechEncoderDecoderModel.from_pretrained("./wav2vec2bert")
+        # ```"""
+
+        kwargs_encoder = {
+            argument[len("encoder_") :]: value
+            for argument, value in kwargs.items()
+            if argument.startswith("encoder_")
+        }
+
+        kwargs_decoder = {
+            argument[len("decoder_") :]: value
+            for argument, value in kwargs.items()
+            if argument.startswith("decoder_")
+        }
+
+        # remove encoder, decoder kwargs from kwargs
+        for key in kwargs_encoder.keys():
+            del kwargs["encoder_" + key]
+        for key in kwargs_decoder.keys():
+            del kwargs["decoder_" + key]
+
+        # Load and initialize the encoder and decoder
+        # The distinction between encoder and decoder at the model level is made
+        # by the value of the flag `is_decoder` that we need to set correctly.
+        encoder = kwargs_encoder.pop("model", None)
+        if encoder is None:
+            if encoder_pretrained_model_name_or_path is None:
+                raise ValueError(
+                    "If `encoder_model` is not defined as an argument, a `encoder_pretrained_model_name_or_path` has "
+                    "to be defined."
+                )
+
+            if "config" not in kwargs_encoder:
+                encoder_config, kwargs_encoder = AutoConfig.from_pretrained(
+                    encoder_pretrained_model_name_or_path,
+                    **kwargs_encoder,
+                    return_unused_kwargs=True,
+                )
+
+                kwargs_encoder["config"] = encoder_config
+
+            encoder = AutoModel.from_pretrained(
+                encoder_pretrained_model_name_or_path, *model_args, **kwargs_encoder
+            )
+
+        decoder = kwargs_decoder.pop("model", None)
+        if decoder is None:
+            if decoder_pretrained_model_name_or_path is None:
+                raise ValueError(
+                    "If `decoder_model` is not defined as an argument, a `decoder_pretrained_model_name_or_path` has "
+                    "to be defined."
+                )
+
+            if "config" not in kwargs_decoder:
+                decoder_config, kwargs_decoder = AutoConfig.from_pretrained(
+                    decoder_pretrained_model_name_or_path,
+                    **kwargs_decoder,
+                    return_unused_kwargs=True,
+                )
+
+                kwargs_decoder["config"] = decoder_config
+
+            decoder = AutoModelForCausalLM.from_pretrained(
+                decoder_pretrained_model_name_or_path, **kwargs_decoder
+            )
+
+        # instantiate config with corresponding kwargs
+        config = SpeechLMConfig.from_encoder_decoder_configs(
+            encoder.config, decoder.config, **kwargs
         )
-        return cls(config=config, encoder=encoder, decoder=decoder)
 
-    # @classmethod
-    # def from_encoder_decoder_pretrained(
-    #     cls,
-    #     encoder_pretrained_model_name_or_path: str = None,
-    #     decoder_pretrained_model_name_or_path: str = None,
-    #     *model_args,
-    #     **kwargs,
-    # ) -> PreTrainedModel:
-    #     r"""
-    #     Instantiate an encoder and a decoder from one or two base classes of the library from pretrained model
-    #     checkpoints.
-
-    #     The model is set in evaluation mode by default using `model.eval()` (Dropout modules are deactivated). To train
-    #     the model, you need to first set it back in training mode with `model.train()`.
-
-    #     Params:
-    #         encoder_pretrained_model_name_or_path (`str`, *optional*):
-    #             Information necessary to initiate the encoder. Can be either:
-
-    #                 - A string, the *model id* of a pretrained model hosted inside a model repo on huggingface.co.
-    #                 - A path to a *directory* containing model weights saved using
-    #                   [`~PreTrainedModel.save_pretrained`], e.g., `./my_model_directory/`.
-    #                 - A path or url to a *tensorflow index checkpoint file* (e.g, `./tf_model/model.ckpt.index`). In
-    #                   this case, `from_tf` should be set to `True` and a configuration object should be provided as
-    #                   `config` argument. This loading path is slower than converting the TensorFlow checkpoint in a
-    #                   PyTorch model using the provided conversion scripts and loading the PyTorch model afterwards.
-
-    #         decoder_pretrained_model_name_or_path (`str`, *optional*, defaults to `None`):
-    #             Information necessary to initiate the decoder. Can be either:
-
-    #                 - A string, the *model id* of a pretrained model hosted inside a model repo on huggingface.co.
-    #                 - A path to a *directory* containing model weights saved using
-    #                   [`~PreTrainedModel.save_pretrained`], e.g., `./my_model_directory/`.
-    #                 - A path or url to a *tensorflow index checkpoint file* (e.g, `./tf_model/model.ckpt.index`). In
-    #                   this case, `from_tf` should be set to `True` and a configuration object should be provided as
-    #                   `config` argument. This loading path is slower than converting the TensorFlow checkpoint in a
-    #                   PyTorch model using the provided conversion scripts and loading the PyTorch model afterwards.
-
-    #         model_args (remaining positional arguments, *optional*):
-    #             All remaning positional arguments will be passed to the underlying model's `__init__` method.
-
-    #         kwargs (remaining dictionary of keyword arguments, *optional*):
-    #             Can be used to update the configuration object (after it being loaded) and initiate the model (e.g.,
-    #             `output_attentions=True`).
-
-    #             - To update the encoder configuration, use the prefix *encoder_* for each configuration parameter.
-    #             - To update the decoder configuration, use the prefix *decoder_* for each configuration parameter.
-    #             - To update the parent model configuration, do not use a prefix for each configuration parameter.
-
-    #             Behaves differently depending on whether a `config` is provided or automatically loaded.
-
-    #     Example:
-
-    #     ```python
-    #     >>> from transformers import SpeechEncoderDecoderModel
-
-    #     >>> # initialize a wav2vec2bert from a pretrained Wav2Vec2 and a pretrained BERT model. Note that the cross-attention layers will be randomly initialized
-    #     >>> model = SpeechEncoderDecoderModel.from_encoder_decoder_pretrained(
-    #     ...     "facebook/wav2vec2-base-960h", "google-bert/bert-base-uncased"
-    #     ... )
-    #     >>> # saving model after fine-tuning
-    #     >>> model.save_pretrained("./wav2vec2bert")
-    #     >>> # load fine-tuned model
-    #     >>> model = SpeechEncoderDecoderModel.from_pretrained("./wav2vec2bert")
-    #     ```"""
-
-    #     kwargs_encoder = {
-    #         argument[len("encoder_") :]: value
-    #         for argument, value in kwargs.items()
-    #         if argument.startswith("encoder_")
-    #     }
-
-    #     kwargs_decoder = {
-    #         argument[len("decoder_") :]: value
-    #         for argument, value in kwargs.items()
-    #         if argument.startswith("decoder_")
-    #     }
-
-    #     # remove encoder, decoder kwargs from kwargs
-    #     for key in kwargs_encoder.keys():
-    #         del kwargs["encoder_" + key]
-    #     for key in kwargs_decoder.keys():
-    #         del kwargs["decoder_" + key]
-
-    #     # Load and initialize the encoder and decoder
-    #     # The distinction between encoder and decoder at the model level is made
-    #     # by the value of the flag `is_decoder` that we need to set correctly.
-    #     encoder = kwargs_encoder.pop("model", None)
-    #     if encoder is None:
-    #         if encoder_pretrained_model_name_or_path is None:
-    #             raise ValueError(
-    #                 "If `encoder_model` is not defined as an argument, a `encoder_pretrained_model_name_or_path` has "
-    #                 "to be defined."
-    #             )
-
-    #         if "config" not in kwargs_encoder:
-    #             encoder_config, kwargs_encoder = AutoConfig.from_pretrained(
-    #                 encoder_pretrained_model_name_or_path,
-    #                 **kwargs_encoder,
-    #                 return_unused_kwargs=True,
-    #             )
-
-    #             if (
-    #                 encoder_config.is_decoder is True
-    #                 or encoder_config.add_cross_attention is True
-    #             ):
-    #                 logger.info(
-    #                     f"Initializing {encoder_pretrained_model_name_or_path} as a encoder model "
-    #                     "from a decoder model. Cross-attention and casual mask are disabled."
-    #                 )
-    #                 encoder_config.is_decoder = False
-    #                 encoder_config.add_cross_attention = False
-
-    #             kwargs_encoder["config"] = encoder_config
-
-    #         encoder = AutoModel.from_pretrained(
-    #             encoder_pretrained_model_name_or_path, *model_args, **kwargs_encoder
-    #         )
-
-    #     decoder = kwargs_decoder.pop("model", None)
-    #     if decoder is None:
-    #         if decoder_pretrained_model_name_or_path is None:
-    #             raise ValueError(
-    #                 "If `decoder_model` is not defined as an argument, a `decoder_pretrained_model_name_or_path` has "
-    #                 "to be defined."
-    #             )
-
-    #         if "config" not in kwargs_decoder:
-    #             decoder_config, kwargs_decoder = AutoConfig.from_pretrained(
-    #                 decoder_pretrained_model_name_or_path,
-    #                 **kwargs_decoder,
-    #                 return_unused_kwargs=True,
-    #             )
-
-    #             if (
-    #                 decoder_config.is_decoder is False
-    #                 or decoder_config.add_cross_attention is False
-    #             ):
-    #                 logger.info(
-    #                     f"Initializing {decoder_pretrained_model_name_or_path} as a decoder model. Cross attention"
-    #                     f" layers are added to {decoder_pretrained_model_name_or_path} and randomly initialized if"
-    #                     f" {decoder_pretrained_model_name_or_path}'s architecture allows for cross attention layers."
-    #                 )
-    #                 decoder_config.is_decoder = True
-    #                 decoder_config.add_cross_attention = True
-
-    #             kwargs_decoder["config"] = decoder_config
-
-    #         if (
-    #             kwargs_decoder["config"].is_decoder is False
-    #             or kwargs_decoder["config"].add_cross_attention is False
-    #         ):
-    #             logger.warning(
-    #                 f"Decoder model {decoder_pretrained_model_name_or_path} is not initialized as a decoder. "
-    #                 f"In order to initialize {decoder_pretrained_model_name_or_path} as a decoder, "
-    #                 "make sure that the attributes `is_decoder` and `add_cross_attention` of `decoder_config` "
-    #                 "passed to `.from_encoder_decoder_pretrained(...)` are set to `True` or do not pass a "
-    #                 "`decoder_config` to `.from_encoder_decoder_pretrained(...)`"
-    #             )
-
-    #         decoder = AutoModelForCausalLM.from_pretrained(
-    #             decoder_pretrained_model_name_or_path, **kwargs_decoder
-    #         )
-
-    #     # instantiate config with corresponding kwargs
-    #     config = SpeechEncoderDecoderConfig.from_encoder_decoder_configs(
-    #         encoder.config, decoder.config, **kwargs
-    #     )
-
-    #     # make sure input & output embeddings is not tied
-    #     config.tie_word_embeddings = False
-    #     return cls(encoder=encoder, decoder=decoder, config=config)
+        # make sure input & output embeddings is not tied
+        config.tie_word_embeddings = False
+        return cls(encoder=encoder, decoder=decoder, config=config)
 
     # @add_start_docstrings_to_model_forward(SPEECH_ENCODER_DECODER_INPUTS_DOCSTRING)
     # @replace_return_docstrings(
@@ -523,34 +516,34 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
         return_dict: Optional[bool] = None,
         **kwargs,
     ) -> Union[Tuple[torch.FloatTensor], Seq2SeqLMOutput]:
-        r"""
-        Returns:
+        # r"""
+        # Returns:
 
-        Examples:
+        # Examples:
 
-        ```python
-        >>> from transformers import SpeechEncoderDecoderModel, AutoProcessor
-        >>> from datasets import load_dataset
-        >>> import torch
+        # ```python
+        # >>> from transformers import SpeechEncoderDecoderModel, AutoProcessor
+        # >>> from datasets import load_dataset
+        # >>> import torch
 
-        >>> processor = AutoProcessor.from_pretrained("facebook/wav2vec2-xls-r-300m-en-to-15")
-        >>> model = SpeechEncoderDecoderModel.from_pretrained("facebook/wav2vec2-xls-r-300m-en-to-15")
+        # >>> processor = AutoProcessor.from_pretrained("facebook/wav2vec2-xls-r-300m-en-to-15")
+        # >>> model = SpeechEncoderDecoderModel.from_pretrained("facebook/wav2vec2-xls-r-300m-en-to-15")
 
-        >>> ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
+        # >>> ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
 
-        >>> input_values = processor(ds[0]["audio"]["array"], return_tensors="pt").input_values
-        >>> # Inference: Translate English speech to German
-        >>> generated = model.generate(input_values)
-        >>> decoded = processor.batch_decode(generated, skip_special_tokens=True)[0]
-        >>> decoded
-        'Mr. Quilter ist der Apostel der Mittelschicht und wir freuen uns, sein Evangelium willkommen heißen zu können.'
+        # >>> input_values = processor(ds[0]["audio"]["array"], return_tensors="pt").input_values
+        # >>> # Inference: Translate English speech to German
+        # >>> generated = model.generate(input_values)
+        # >>> decoded = processor.batch_decode(generated, skip_special_tokens=True)[0]
+        # >>> decoded
+        # 'Mr. Quilter ist der Apostel der Mittelschicht und wir freuen uns, sein Evangelium willkommen heißen zu können.'
 
-        >>> # Training: Train model on English transcription
-        >>> labels = processor(text=ds[0]["text"], return_tensors="pt").input_ids
+        # >>> # Training: Train model on English transcription
+        # >>> labels = processor(text=ds[0]["text"], return_tensors="pt").input_ids
 
-        >>> loss = model(input_values, labels=labels).loss
-        >>> loss.backward()
-        ```"""
+        # >>> loss = model(input_values, labels=labels).loss
+        # >>> loss.backward()
+        # ```"""
         return_dict = (
             return_dict if return_dict is not None else self.config.use_return_dict
         )
@@ -608,12 +601,7 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
 
         encoder_hidden_states = encoder_outputs[0]
 
-        # optionally project encoder_hidden_states
-        if (
-            self.encoder_output_dim != self.decoder.config.hidden_size
-            and self.decoder.config.cross_attention_hidden_size is None
-        ):
-            encoder_hidden_states = self.enc_to_dec_proj(encoder_hidden_states)
+        encoder_hidden_states = self.enc_to_dec_proj(encoder_hidden_states)
 
         # compute correct encoder attention mask
         # if attention_mask is not None:
@@ -622,14 +610,6 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
         #     )
         # else:
         #     encoder_attention_mask = None
-
-        # if (labels is not None) and (
-        #     decoder_input_ids is None and decoder_inputs_embeds is None
-        # ):
-        # if labels is not None:
-        #     labels = shift_tokens_right(
-        #         labels, self.config.pad_token_id, self.config.decoder_start_token_id
-        #     )
 
         # extract input embeds from the decoder
         decoder_input_embs = self.decoder.get_input_embeddings()(text_input_ids)
@@ -643,7 +623,6 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
             [audio_attention_mask, text_attention_mask], dim=1
         )
 
-        # Decode
         decoder_outputs = self.decoder(
             inputs_embeds=decoder_input_embs,
             attention_mask=decoder_attention_mask,
@@ -655,18 +634,16 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
             **kwargs_decoder,
         )
 
-        logits = decoder_outputs.logits if return_dict else decoder_outputs[0]
+        encoder_seq_len = encoder_hidden_states.shape[1]
+        logits = decoder_outputs.logits[:, encoder_seq_len:, :]
 
-        # Compute loss independent from decoder (as some shift the logits inside them)
         loss = None
         if labels is not None:
-            loss_logits = logits[:, -labels.shape[1] :, :]
-            shift_logits = loss_logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            loss_fct = CrossEntropyLoss()
-            loss = loss_fct(
-                shift_logits.view(-1, self.decoder.config.vocab_size),
-                shift_labels.view(-1),
+            loss = self.loss_function(
+                logits=logits,
+                labels=labels,
+                vocab_size=self.config.vocab_size,
+                **kwargs,
             )
 
         if not return_dict:
@@ -683,23 +660,6 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
             attentions=decoder_outputs.attentions,
         )
 
-        # return Seq2SeqLMOutput(
-        #     loss=loss,
-        #     logits=decoder_outputs.logits,
-        #     past_key_values=decoder_outputs.past_key_values,
-        #     decoder_hidden_states=decoder_outputs.hidden_states,
-        #     decoder_attentions=decoder_outputs.attentions,
-        #     cross_attentions=decoder_outputs.cross_attentions,
-        #     encoder_last_hidden_state=encoder_hidden_states,
-        #     encoder_hidden_states=encoder_outputs.hidden_states,
-        #     encoder_attentions=encoder_outputs.attentions,
-        # )
-
-    def prepare_decoder_input_ids_from_labels(self, labels: torch.Tensor):
-        return shift_tokens_right(
-            labels, self.config.pad_token_id, self.config.decoder_start_token_id
-        )
-
     def resize_token_embeddings(self, *args, **kwargs):
         raise NotImplementedError(
             "Resizing the embedding layers via the SpeechEncoderDecoderModel directly is not supported. Please use the"
@@ -710,5 +670,37 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
         # apply decoder cache reordering here
         return self.decoder._reorder_cache(past_key_values, beam_idx)
 
+    def greedy_decoding(self, inputs, max_tokens):
+        """
+        Inputs is a (batch_size, seq_length) torch tensor
+        """
 
-__all__ = ["SpeechEncoderDecoderModel"]
+        gen_count = 0
+
+        while True:
+            output = self(**inputs)
+            pred_ids = output.logits.argmax(-1)
+
+            # append pred_ids[0, -1] to inputs["text_input_ids"]
+            inputs["text_input_ids"] = torch.cat(
+                [inputs["text_input_ids"], pred_ids[:, -1].unsqueeze(0)], dim=1
+            )
+            # add a 1 to the attention mask
+            inputs["text_attention_mask"] = torch.cat(
+                [inputs["text_attention_mask"], torch.tensor([[1]]).to("cuda:0")],
+                dim=1,
+            )
+
+            gen_count += 1
+            if gen_count == max_tokens:
+                print("End because of max_tokens")
+                break
+
+            if pred_ids[0, -1].item() == self.config.decoder.eos_token_id:
+                print("End because of EOS")
+                break
+
+        return inputs["text_input_ids"]
+
+
+# __all__ = ["SpeechEncoderDecoderModel"]
