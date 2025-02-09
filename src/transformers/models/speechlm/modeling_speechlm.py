@@ -1,21 +1,8 @@
 # coding=utf-8
-# Copyright 2021 The HuggingFace Inc. team.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-"""Classes to support Speech-Encoder-Text-Decoder architectures"""
+"""Speech LM architecture"""
 
 from typing import Optional, Tuple, Union
-
+import pdb
 import torch
 from torch import nn
 from torch.nn import CrossEntropyLoss
@@ -168,31 +155,6 @@ logger = logging.get_logger(__name__)
 # """
 
 
-# Copied from transformers.models.encoder_decoder.modeling_encoder_decoder.shift_tokens_right
-# def shift_tokens_right(
-#     input_ids: torch.Tensor, pad_token_id: int, decoder_start_token_id: int
-# ):
-#     """
-#     Shift input ids one token to the right.
-#     """
-#     shifted_input_ids = input_ids.new_zeros(input_ids.shape)
-#     shifted_input_ids[:, 1:] = input_ids[:, :-1].clone()
-#     if decoder_start_token_id is None:
-#         raise ValueError(
-#             "Make sure to set the decoder_start_token_id attribute of the model's configuration."
-#         )
-#     shifted_input_ids[:, 0] = decoder_start_token_id
-
-#     if pad_token_id is None:
-#         raise ValueError(
-#             "Make sure to set the pad_token_id attribute of the model's configuration."
-#         )
-#     # replace possible -100 values in labels by `pad_token_id`
-#     shifted_input_ids.masked_fill_(shifted_input_ids == -100, pad_token_id)
-
-#     return shifted_input_ids
-
-
 class SpeechLMPreTrainedModel(PreTrainedModel, GenerationMixin):
     base_class_prefix = ""
 
@@ -215,6 +177,7 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
     _supports_flash_attn_2 = True
     _supports_sdpa = True
 
+    # TODO: this gets ignored by the trainer, maybe it goes in the config class
     loss_type = "ForCausalLM"
 
     def __init__(
@@ -282,38 +245,11 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
         # MODALITY AND LENGTH ADAPTER
         # TODO: be back at this with better strategies
         ####################################
-        self.enc_to_dec_proj = nn.Linear(
-            self.encoder.config.hidden_size, self.decoder.config.hidden_size
-        )
-        # if self.config.adapter_type == "linear":
-        #     # encoder outputs might need to be projected to different dimension for decoder
-        # elif self.config.adapter_type == "perceiver":
-
-        #     self.enc_to_dec_proj = Perceiver(
-        #         input_dim=self.encoder.config.hidden_size,
-        #         depth=2,
-        #         # output_dim=self.decoder.config.hidden_size,
-        #         num_latents=self.config.num_latents,
-        #         latent_dim=self.decoder.config.hidden_size,
-        #         cross_heads=1,
-        #         cross_head_dim=64,
-        #         cross_rotary_emb_dim=0,
-        #         cross_attn_dropout=0.0,
-        #         latent_heads=8,
-        #         latent_head_dim=64,
-        #         latent_rotary_emb_dim=0,
-        #         latent_attn_dropout=0.0,
-        #         weight_tie_layers=False,
-        #         gated_mlp=True,
-        #         self_per_cross_attn=1,
-        #         num_zero_tokens=None,
-        #         use_flash_attn=False,
-        #     )
-
-        # else:
-        #     raise ValueError(
-        #         f"Adapter type {self.config.adapter_type} not supported. Please use 'linear' or 'perceiver'."
-        #     )
+        if self.encoder_output_dim != self.decoder.config.hidden_size:
+            logger.info("Adding encoder to decoder projection layer")
+            self.enc_to_dec_proj = nn.Linear(
+                self.encoder.config.hidden_size, self.decoder.config.hidden_size
+            )
 
         if self.encoder.get_output_embeddings() is not None:
             raise ValueError(
@@ -598,10 +534,12 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
             return_dict=return_dict,
             **kwargs_encoder,
         )
-
         encoder_hidden_states = encoder_outputs[0]
 
-        encoder_hidden_states = self.enc_to_dec_proj(encoder_hidden_states)
+        # we project the encoder outputs if we haven't done it
+        # within the adapter
+        if hasattr(self, "enc_to_dec_proj"):
+            encoder_hidden_states = self.enc_to_dec_proj(encoder_hidden_states)
 
         # compute correct encoder attention mask
         # if attention_mask is not None:
@@ -623,6 +561,10 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
             [audio_attention_mask, text_attention_mask], dim=1
         )
 
+        # HF's llama implementation can compute logits only on
+        # of the logits_to_keep last tokens of the input
+        logits_to_keep = text_input_ids.shape[1]
+
         decoder_outputs = self.decoder(
             inputs_embeds=decoder_input_embs,
             attention_mask=decoder_attention_mask,
@@ -631,16 +573,16 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
             use_cache=use_cache,
             past_key_values=past_key_values,
             return_dict=return_dict,
+            logits_to_keep=logits_to_keep,  # TBD: it probably works only for llama decoders
             **kwargs_decoder,
         )
 
-        encoder_seq_len = encoder_hidden_states.shape[1]
-        logits = decoder_outputs.logits[:, encoder_seq_len:, :]
+        logits = decoder_outputs.logits
 
         loss = None
         if labels is not None:
             loss = self.loss_function(
-                logits=logits,
+                logits=decoder_outputs.logits,
                 labels=labels,
                 vocab_size=self.config.vocab_size,
                 **kwargs,

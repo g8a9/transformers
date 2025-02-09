@@ -17,7 +17,7 @@ Speech processor class for Wav2Vec2-BERT
 """
 
 import warnings
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict
 
 from ...processing_utils import ProcessingKwargs, ProcessorMixin, Unpack
 from ...tokenization_utils_base import AudioInput, PreTokenizedInput, TextInput
@@ -54,12 +54,20 @@ class SpeechLMProcessor(ProcessorMixin):
     tokenizer_class = "AutoTokenizer"
 
     lang2token = {
-        "ita": "<|ita|>",
-        "eng": "<|eng|>",
+        "it": "<|it|>",
+        "en": "<|en|>",
+        "nl": "<|nl|>",
+        "fr": "<|fr|>",
+        "de": "<|de|>",
+        "pt": "<|pt|>",
+        "es": "<|es|>",
+        "pl": "<|pl|>",
     }
     task2token = {
         "transcribe": "<|transcribe|>",
         "translate": "<|translate|>",
+        "summarize": "<|summarize|>",
+        "reply": "<|reply|>",
     }
 
     def __init__(self, feature_extractor, tokenizer):
@@ -97,15 +105,20 @@ class SpeechLMProcessor(ProcessorMixin):
 
         return cls(feature_extractor=feature_extractor, tokenizer=tokenizer)
 
-    def _add_lang_task_tokens(self, text_inputs, lang, task):
+    def _add_lang_task_tokens(
+        self,
+        text_inputs: Dict[str, List],
+        target_langs: List[str],
+        target_tasks: List[str],
+    ):
         text_inputs["input_ids"] = [
-            [t[0]]  # bos_token
+            [ti[0]]  # bos_token
             + [
-                self.tokenizer.convert_tokens_to_ids(self.lang2token[lang]),
-                self.tokenizer.convert_tokens_to_ids(self.task2token[task]),
+                self.tokenizer.convert_tokens_to_ids(self.lang2token[tl]),
+                self.tokenizer.convert_tokens_to_ids(self.task2token[tt]),
             ]
-            + t[1:]
-            for t in text_inputs["input_ids"]
+            + ti[1:]
+            for ti, tl, tt in zip(text_inputs["input_ids"], target_langs, target_tasks)
         ]
         text_inputs["attention_mask"] = [
             [1, 1] + am for am in text_inputs["attention_mask"]
@@ -115,8 +128,8 @@ class SpeechLMProcessor(ProcessorMixin):
     def __call__(
         self,
         audio: AudioInput,
-        task: str,
-        lang: str,
+        task: Union[str, List[str]],
+        lang: Union[str, List[str]],
         text: Optional[Union[str, List[str], TextInput, PreTokenizedInput]] = None,
         **kwargs,
     ):
@@ -145,7 +158,11 @@ class SpeechLMProcessor(ProcessorMixin):
                 "attention_mask": [[1]],
             }
 
-        text_inputs = self._add_lang_task_tokens(text_inputs, lang, task)
+        target_langs = lang if isinstance(lang, list) else [lang] * len(text)
+        target_tasks = task if isinstance(task, list) else [task] * len(text)
+        text_inputs = self._add_lang_task_tokens(
+            text_inputs, target_langs, target_tasks
+        )
 
         merged_inputs = {
             **{f"audio_{k}": v for k, v in audio_inputs.items()},
