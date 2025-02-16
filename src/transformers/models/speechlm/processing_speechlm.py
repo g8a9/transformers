@@ -149,6 +149,7 @@ class SpeechLMProcessor(ProcessorMixin):
 
         # if audio is not None:
         audio_inputs = self.feature_extractor(audio, **output_kwargs["audio_kwargs"])
+        items_count = audio_inputs["input_features"].shape[0]
 
         if text is not None:
             text_inputs = self.tokenizer(text, **output_kwargs["text_kwargs"])
@@ -158,15 +159,16 @@ class SpeechLMProcessor(ProcessorMixin):
                 "attention_mask": [[1]],
             }
 
-        target_langs = lang if isinstance(lang, list) else [lang] * len(text)
-        target_tasks = task if isinstance(task, list) else [task] * len(text)
+        target_langs = lang if isinstance(lang, list) else [lang] * items_count
+        target_tasks = task if isinstance(task, list) else [task] * items_count
         text_inputs = self._add_lang_task_tokens(
             text_inputs, target_langs, target_tasks
         )
 
         merged_inputs = {
             **{f"audio_{k}": v for k, v in audio_inputs.items()},
-            **{f"text_{k}": v for k, v in text_inputs.items()},
+            **text_inputs,  # use input_ids and attention mask to comply with HF API...
+            # **{f"text_{k}": v for k, v in text_inputs.items()},
         }
 
         return merged_inputs
