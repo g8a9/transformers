@@ -21,16 +21,17 @@ from ...utils import (
 from ..auto.configuration_auto import AutoConfig
 from ..auto.modeling_auto import AutoModel, AutoModelForCausalLM
 from .configuration_speechlm import SpeechLMConfig
-from ...generation.configuration_utils import GenerationConfig
-from ...generation.logits_process import LogitsProcessorList
-from ...generation.stopping_criteria import StoppingCriteriaList
-from ...generation.utils import GenerateOutput
-from ...integrations.deepspeed import is_deepspeed_zero3_enabled
-from ...integrations.fsdp import is_fsdp_managed_module
-from ...utils import is_torchdynamo_compiling
-from typing import Callable, List
-import torch.distributed as dist
-import warnings
+
+# from ...generation.configuration_utils import GenerationConfig
+# from ...generation.logits_process import LogitsProcessorList
+# from ...generation.stopping_criteria import StoppingCriteriaList
+# from ...generation.utils import GenerateOutput
+# from ...integrations.deepspeed import is_deepspeed_zero3_enabled
+# from ...integrations.fsdp import is_fsdp_managed_module
+# from ...utils import is_torchdynamo_compiling
+# from typing import Callable, List
+# import torch.distributed as dist
+# import warnings
 
 
 logger = logging.get_logger(__name__)
@@ -51,7 +52,7 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
 
     config_class = SpeechLMConfig
     base_model_prefix = "speech_lm"
-    # main_input_name = ""
+    main_input_name = "input_ids"
 
     supports_gradient_checkpointing = True
     _supports_param_buffer_assignment = False
@@ -350,6 +351,8 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
                 [self.audio_attention_mask, attention_mask], dim=1
             )
 
+        logits_to_keep = logits_to_keep if logits_to_keep != 0 else input_ids.shape[1]
+
         decoder_outputs = self.decoder(
             inputs_embeds=decoder_input_embs,
             attention_mask=attention_mask,
@@ -370,6 +373,7 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
                 logits=decoder_outputs.logits,
                 labels=labels,
                 vocab_size=self.config.vocab_size,
+                ignore_index=self.config.pad_token_id,
                 **kwargs,
             )
 

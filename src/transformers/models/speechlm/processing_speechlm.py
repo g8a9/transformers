@@ -27,6 +27,7 @@ from ..llama.tokenization_llama import LlamaTokenizer
 from ... import AutoTokenizer
 from tokenizers import AddedToken
 import torch
+import itertools
 
 import pdb
 
@@ -70,6 +71,10 @@ class SpeechLMProcessor(ProcessorMixin):
         "reply": "<|reply|>",
     }
 
+    @property
+    def eos_token(self):
+        return self.tokenizer.eos_token
+
     def __init__(self, feature_extractor, tokenizer):
         super().__init__(feature_extractor, tokenizer)
 
@@ -100,30 +105,30 @@ class SpeechLMProcessor(ProcessorMixin):
         ]
 
         tokenizer.add_tokens(additional_tokens, special_tokens=True)
-        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token = "<unk>"
         tokenizer.padding_side = "left"
 
         return cls(feature_extractor=feature_extractor, tokenizer=tokenizer)
 
-    def _add_lang_task_tokens(
-        self,
-        text_inputs: Dict[str, List],
-        target_langs: List[str],
-        target_tasks: List[str],
-    ):
-        text_inputs["input_ids"] = [
-            [ti[0]]  # bos_token
-            + [
-                self.tokenizer.convert_tokens_to_ids(self.lang2token[tl]),
-                self.tokenizer.convert_tokens_to_ids(self.task2token[tt]),
-            ]
-            + ti[1:]
-            for ti, tl, tt in zip(text_inputs["input_ids"], target_langs, target_tasks)
-        ]
-        text_inputs["attention_mask"] = [
-            [1, 1] + am for am in text_inputs["attention_mask"]
-        ]
-        return text_inputs
+    # def _add_lang_task_tokens(
+    #     self,
+    #     text_inputs: Dict[str, List],
+    #     target_langs: List[str],
+    #     target_tasks: List[str],
+    # ):
+    #     text_inputs["input_ids"] = [
+    #         [ti[0]]  # bos_token
+    #         + [
+    #             self.tokenizer.convert_tokens_to_ids(self.lang2token[tl]),
+    #             self.tokenizer.convert_tokens_to_ids(self.task2token[tt]),
+    #         ]
+    #         + ti[1:]
+    #         for ti, tl, tt in zip(text_inputs["input_ids"], target_langs, target_tasks)
+    #     ]
+    #     text_inputs["attention_mask"] = [
+    #         [1, 1] + am for am in text_inputs["attention_mask"]
+    #     ]
+    #     return text_inputs
 
     def __call__(
         self,
@@ -141,6 +146,7 @@ class SpeechLMProcessor(ProcessorMixin):
             raise ValueError(
                 "You need to specify either an `audio` or `text` input to process."
             )
+
         output_kwargs = self._merge_kwargs(
             SpeechLMProcessorKwargs,
             tokenizer_init_kwargs=self.tokenizer.init_kwargs,
@@ -152,18 +158,45 @@ class SpeechLMProcessor(ProcessorMixin):
         items_count = audio_inputs["input_features"].shape[0]
 
         if text is not None:
+            if not isinstance(text, list):
+                text = [text]
+
+            lang = lang if isinstance(lang, list) else [lang] * items_count
+            task = task if isinstance(task, list) else [task] * items_count
+
+            if isinstance(lang, list) and len(lang) != items_count:
+                raise ValueError("`lang` must have the same length as `text`")
+            if isinstance(task, list) and len(task) != items_count:
+                raise ValueError("`task` must have the same length as `text`")
+
+            text = [
+                f"{self.lang2token[tl]}{self.task2token[tt]}{t}"
+                for t, tl, tt in zip(text, lang, task)
+            ]
+
             text_inputs = self.tokenizer(text, **output_kwargs["text_kwargs"])
+
         else:
+            # TODO: this code currently supports only one item (bs = 1)
             text_inputs = {
-                "input_ids": [[self.tokenizer.bos_token_id]],
+                "input_ids": [
+                    [
+                        self.tokenizer.bos_token_id,
+                        self.tokenizer.convert_tokens_to_ids(self.lang2token[lang]),
+                        self.tokenizer.convert_tokens_to_ids(self.task2token[task]),
+                    ]
+                ],
                 "attention_mask": [[1]],
             }
+            rt = kwargs.get("return_tensors", None)
+            if rt is not None:
+                text_inputs = {k: torch.tensor(v) for k, v in text_inputs.items()}
 
-        target_langs = lang if isinstance(lang, list) else [lang] * items_count
-        target_tasks = task if isinstance(task, list) else [task] * items_count
-        text_inputs = self._add_lang_task_tokens(
-            text_inputs, target_langs, target_tasks
-        )
+        # target_langs = lang if isinstance(lang, list) else [lang] * items_count
+        # target_tasks = task if isinstance(task, list) else [task] * items_count
+        # text_inputs = self._add_lang_task_tokens(
+        # text_inputs, target_langs, target_tasks
+        # )
 
         merged_inputs = {
             **{f"audio_{k}": v for k, v in audio_inputs.items()},
