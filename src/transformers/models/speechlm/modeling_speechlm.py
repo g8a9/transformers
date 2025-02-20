@@ -60,7 +60,7 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
     _supports_sdpa = True
 
     # TODO: this gets ignored by the trainer, maybe it goes in the config class
-    loss_type = "ForCausalLM"
+    loss_type: str = "ForCausalLM"
 
     def __init__(
         self,
@@ -81,6 +81,8 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
                 raise ValueError(
                     f"Config: {config} has to be of type {self.config_class}"
                 )
+
+        self.loss_type = "ForCausalLM"
 
         # initialize with config
         # make sure input & output embeddings is not tied
@@ -373,7 +375,7 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
                 logits=decoder_outputs.logits,
                 labels=labels,
                 vocab_size=self.config.vocab_size,
-                ignore_index=self.config.pad_token_id,
+                ignore_index=self.config.decoder.pad_token_id,
                 **kwargs,
             )
 

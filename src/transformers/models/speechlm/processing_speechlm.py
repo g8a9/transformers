@@ -30,6 +30,10 @@ import torch
 import itertools
 
 import pdb
+import logging
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 
 class SpeechLMProcessorKwargs(ProcessingKwargs, total=False):
@@ -82,18 +86,6 @@ class SpeechLMProcessor(ProcessorMixin):
     def from_encoder_decoder_pretrained(
         cls, audio_model_name_or_path, text_model_name_or_path, **kwargs
     ):
-        # try:
-        #     return super().from_pretrained(pretrained_model_name_or_path, **kwargs)
-        # except OSError:
-        #     warnings.warn(
-        #         f"Loading a tokenizer inside {cls.__name__} from a config that does not"
-        #         " include a `tokenizer_class` attribute is deprecated and will be "
-        #         "removed in v5. Please add `'tokenizer_class': 'Wav2Vec2CTCTokenizer'`"
-        #         " attribute to either your `config.json` or `tokenizer_config.json` "
-        #         "file to suppress this warning: ",
-        #         FutureWarning,
-        #     )
-
         feature_extractor = SeamlessM4TFeatureExtractor.from_pretrained(
             audio_model_name_or_path, **kwargs
         )
@@ -105,9 +97,6 @@ class SpeechLMProcessor(ProcessorMixin):
         ]
 
         tokenizer.add_tokens(additional_tokens, special_tokens=True)
-        tokenizer.pad_token = "<unk>"
-        tokenizer.padding_side = "left"
-
         return cls(feature_extractor=feature_extractor, tokenizer=tokenizer)
 
     # def _add_lang_task_tokens(
