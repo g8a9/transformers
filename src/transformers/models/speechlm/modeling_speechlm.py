@@ -38,7 +38,13 @@ logger = logging.get_logger(__name__)
 
 
 class SpeechLMPreTrainedModel(PreTrainedModel, GenerationMixin):
-    base_class_prefix = ""
+    base_class_prefix = "model"
+    _skip_keys_device_placement = ["past_key_values"]
+    _no_split_modules = [
+        "LlamaDecoderLayer",
+        "Wav2Vec2BertAdapterLayer",
+        "Wav2Vec2BertEncoderLayer",
+    ]
 
 
 # @add_start_docstrings(SPEECH_ENCODER_DECODER_START_DOCSTRING)
@@ -157,7 +163,7 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
     def set_output_embeddings(self, new_embeddings):
         return self.decoder.set_output_embeddings(new_embeddings)
 
-    def freeze_feature_encoder(self):
+    def freeze_encoder(self):
         """
         Calling this function will disable the gradient computation for the feature encoder of the speech encoder so
         that its parameters will not be updated during training.
@@ -166,6 +172,14 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
         for name, param in self.encoder.named_parameters():
             if "adapter" not in name:
                 param.requires_grad = False
+
+    def freeze_decoder(self):
+        """
+        Calling this function will disable the gradient computation for the decoder so that its parameters will not be
+        updated during training.
+        """
+        for param in self.decoder.parameters():
+            param.requires_grad = False
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):

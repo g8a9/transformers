@@ -59,15 +59,34 @@ class SpeechLMProcessor(ProcessorMixin):
     tokenizer_class = "AutoTokenizer"
 
     lang2token = {
-        "it": "<|it|>",
-        "en": "<|en|>",
-        "nl": "<|nl|>",
-        "fr": "<|fr|>",
-        "de": "<|de|>",
-        "pt": "<|pt|>",
-        "es": "<|es|>",
-        "pl": "<|pl|>",
+        "bg": "<|bg|>",  # Bulgarian
+        "hr": "<|hr|>",  # Croatian
+        "cs": "<|cs|>",  # Czech
+        "da": "<|da|>",  # Danish
+        "nl": "<|nl|>",  # Dutch
+        "en": "<|en|>",  # English
+        "et": "<|et|>",  # Estonian
+        "fi": "<|fi|>",  # Finnish
+        "fr": "<|fr|>",  # French
+        "de": "<|de|>",  # German
+        "el": "<|el|>",  # Greek
+        "hu": "<|hu|>",  # Hungarian
+        "ga": "<|ga|>",  # Irish
+        "it": "<|it|>",  # Italian
+        "lv": "<|lv|>",  # Latvian
+        "lt": "<|lt|>",  # Lithuanian
+        "mt": "<|mt|>",  # Maltese
+        "pl": "<|pl|>",  # Polish
+        "pt": "<|pt|>",  # Portuguese
+        "ro": "<|ro|>",  # Romanian
+        "sk": "<|sk|>",  # Slovak
+        "sl": "<|sl|>",  # Slovene
+        "es": "<|es|>",  # Spanish
+        "sv": "<|sv|>",  # Swedish
+        "ca": "<|ca|>",  # Catalan
+        "sq": "<|sq|>",  # Albanian
     }
+
     task2token = {
         "transcribe": "<|transcribe|>",
         "translate": "<|translate|>",
