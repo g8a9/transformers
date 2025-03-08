@@ -22,17 +22,6 @@ from ..auto.configuration_auto import AutoConfig
 from ..auto.modeling_auto import AutoModel, AutoModelForCausalLM
 from .configuration_speechlm import SpeechLMConfig
 
-# from ...generation.configuration_utils import GenerationConfig
-# from ...generation.logits_process import LogitsProcessorList
-# from ...generation.stopping_criteria import StoppingCriteriaList
-# from ...generation.utils import GenerateOutput
-# from ...integrations.deepspeed import is_deepspeed_zero3_enabled
-# from ...integrations.fsdp import is_fsdp_managed_module
-# from ...utils import is_torchdynamo_compiling
-# from typing import Callable, List
-# import torch.distributed as dist
-# import warnings
-
 
 logger = logging.get_logger(__name__)
 
