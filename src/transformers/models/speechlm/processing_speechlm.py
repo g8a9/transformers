@@ -40,6 +40,10 @@ class SpeechLMProcessorKwargs(ProcessingKwargs, total=False):
     _defaults = {}
 
 
+def _have_same_length(items: list):
+    return all(len(item) == len(items[0]) for item in items)
+
+
 class SpeechLMProcessor(ProcessorMixin):
     r"""
     Constructs a Wav2Vec2-BERT processor which wraps a Wav2Vec2-BERT feature extractor and a Wav2Vec2 CTC tokenizer into a single
@@ -129,44 +133,25 @@ class SpeechLMProcessor(ProcessorMixin):
         tokenizer.add_tokens(additional_tokens, special_tokens=True)
         return cls(feature_extractor=feature_extractor, tokenizer=tokenizer)
 
-    # def _add_lang_task_tokens(
-    #     self,
-    #     text_inputs: Dict[str, List],
-    #     target_langs: List[str],
-    #     target_tasks: List[str],
-    # ):
-    #     text_inputs["input_ids"] = [
-    #         [ti[0]]  # bos_token
-    #         + [
-    #             self.tokenizer.convert_tokens_to_ids(self.lang2token[tl]),
-    #             self.tokenizer.convert_tokens_to_ids(self.task2token[tt]),
-    #         ]
-    #         + ti[1:]
-    #         for ti, tl, tt in zip(text_inputs["input_ids"], target_langs, target_tasks)
-    #     ]
-    #     text_inputs["attention_mask"] = [
-    #         [1, 1] + am for am in text_inputs["attention_mask"]
-    #     ]
-    #     return text_inputs
-    def _have_same_length(items: List):
-        return all(len(item) == len(items[0]) for item in items)
-    
-    def _build_preamble_block(self, target_lang, target_task, text_preamble: Optional[List[str]]= None):
-        if not text_preamble:
+    def _build_preamble_block(
+        self, target_lang, target_task, text_preamble: str | None = None
+    ):
+        if text_preamble is not None:
             preamble_block = [
-                f"{self.tokenizer.bos_token} {self.lang2token[tl]} {self.task2token[tt]} {tp}"
+                f"{self.lang2token[tl]}{self.task2token[tt]}{tp}"
                 for tl, tt, tp in zip(target_lang, target_task, text_preamble)
             ]
         else:
             preamble_block = [
-                f"{self.tokenizer.bos_token} {self.lang2token[tl]} {self.task2token[tt]}"
+                f"{self.lang2token[tl]}{self.task2token[tt]}"
                 for tl, tt in zip(target_lang, target_task)
             ]
         preamble_inputs = self.tokenizer(
             preamble_block,
             padding="longest",
             return_tensors="pt",
-            return_attention_mask=True
+            return_attention_mask=True,
+            add_special_tokens=False,
         )
         return preamble_inputs
 
@@ -177,6 +162,7 @@ class SpeechLMProcessor(ProcessorMixin):
         target_lang: Union[str, List[str]],
         text: Optional[Union[str, List[str], TextInput, PreTokenizedInput]] = None,
         text_preamble: Optional[Union[str, List[str]]] = None,
+        return_labels: bool = False,
         **kwargs,
     ):
         """
@@ -186,13 +172,13 @@ class SpeechLMProcessor(ProcessorMixin):
             raise ValueError(
                 "You need to specify either an `audio` or `text` input to process."
             )
-        
+
         if "return_tensors" in kwargs and kwargs["return_tensors"] != "pt":
             warnings.warn(
                 "We currently support `return_tensors='pt'`. Setting it to `pt` for now.",
             )
         kwargs["return_tensors"] = "pt"
-        
+
         output_kwargs = self._merge_kwargs(
             SpeechLMProcessorKwargs,
             tokenizer_init_kwargs=self.tokenizer.init_kwargs,
@@ -205,39 +191,54 @@ class SpeechLMProcessor(ProcessorMixin):
         items_count = audio_inputs["input_features"].shape[0]
 
         # 2. audio is followed by a block containing ids for task, target_lang, and optionally text preamble
-        target_lang = target_lang if isinstance(target_lang, list) else [target_lang] * items_count
+        target_lang = (
+            target_lang
+            if isinstance(target_lang, list)
+            else [target_lang] * items_count
+        )
         task = task if isinstance(task, list) else [task] * items_count
         len_to_check = [target_lang, task]
         if text_preamble is not None:
-            text_preamble = text_preamble if isinstance(text_preamble, list) else [text_preamble] * items_count
+            text_preamble = (
+                text_preamble
+                if isinstance(text_preamble, list)
+                else [text_preamble] * items_count
+            )
             len_to_check.append(text_preamble)
-        if not self._have_same_length(len_to_check):
-            raise ValueError("`lang`, `task`, and `text_preamble` must have the same length")
-        
+        if not _have_same_length(len_to_check):
+            raise ValueError(
+                "`lang`, `task`, and `text_preamble` must have the same length"
+            )
+
         preamble_inputs = self._build_preamble_block(target_lang, task, text_preamble)
-        
+
         # 3. encode text if needed
         text_inputs = preamble_inputs
         if text is not None:
             if not isinstance(text, list):
                 text = [text]
-            if not self._have_same_length([text, target_lang]):
+            if not _have_same_length([text, target_lang]):
                 raise ValueError("`text` and `lang` must have the same length")
 
             tokenized_text = self.tokenizer(text, **output_kwargs["text_kwargs"])
             text_inputs = {
-                "input_ids": torch.cat([preamble_inputs["input_ids"], tokenized_text["input_ids"]], dim=1),
-                "attention_mask": torch.cat([preamble_inputs["input_ids"], tokenized_text["attention_mask"]], dim=1),
+                "input_ids": torch.cat(
+                    [preamble_inputs["input_ids"], tokenized_text["input_ids"]], dim=1
+                ),
+                "attention_mask": torch.cat(
+                    [preamble_inputs["input_ids"], tokenized_text["attention_mask"]],
+                    dim=1,
+                ),
             }
 
         output_dict = {
             **{f"audio_{k}": v for k, v in audio_inputs.items()},
             **text_inputs,
         }
-        if kwargs.get("return_labels", False):
+        if return_labels:
             output_dict["labels"] = tokenized_text["input_ids"]
 
-        return output_dict 
+        return output_dict
 
     #     def pad(self, input_features=None, labels=None, **kwargs):
     #         """

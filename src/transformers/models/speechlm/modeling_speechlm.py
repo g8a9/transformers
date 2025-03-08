@@ -356,7 +356,10 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
                 [self.audio_attention_mask, attention_mask], dim=1
             )
 
-        logits_to_keep = logits_to_keep if logits_to_keep != 0 else input_ids.shape[1]
+        if logits_to_keep == 0:
+            logits_to_keep = (
+                labels.shape[1] if labels is not None else input_ids.shape[1]
+            )
 
         decoder_outputs = self.decoder(
             inputs_embeds=decoder_input_embs,
