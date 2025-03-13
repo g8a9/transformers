@@ -211,8 +211,6 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
             del kwargs["decoder_" + key]
 
         # Load and initialize the encoder and decoder
-        # The distinction between encoder and decoder at the model level is made
-        # by the value of the flag `is_decoder` that we need to set correctly.
         encoder = kwargs_encoder.pop("model", None)
         if encoder is None:
             if encoder_pretrained_model_name_or_path is None:
