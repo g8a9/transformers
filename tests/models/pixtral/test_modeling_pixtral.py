@@ -20,7 +20,6 @@ from transformers import (
     PixtralVisionConfig,
     PixtralVisionModel,
     is_torch_available,
-    is_vision_available,
 )
 from transformers.testing_utils import (
     require_torch,
@@ -33,10 +32,6 @@ from ...test_modeling_common import ModelTesterMixin, floats_tensor
 
 if is_torch_available():
     import torch
-
-
-if is_vision_available():
-    pass
 
 
 class PixtralVisionModelTester:
@@ -100,32 +95,6 @@ class PixtralVisionModelTester:
             attention_dropout=self.attention_dropout,
             initializer_range=self.initializer_range,
         )
-
-    def create_and_check_model(self, config, pixel_values):
-        model = PixtralVisionModel(config=config)
-        model.to(torch_device)
-        model.eval()
-        with torch.no_grad():
-            result = model(pixel_values)
-        # expected sequence length = num_patches + 1 (we add 1 for the [CLS] token)
-        image_size = (self.image_size, self.image_size)
-        patch_size = (self.patch_size, self.patch_size)
-        num_patches = (image_size[1] // patch_size[1]) * (image_size[0] // patch_size[0])
-        self.parent.assertEqual(result.last_hidden_state.shape, (self.batch_size, num_patches + 1, self.hidden_size))
-        self.parent.assertEqual(result.pooler_output.shape, (self.batch_size, self.hidden_size))
-
-    def create_and_check_model_with_projection(self, config, pixel_values):
-        model = PixtralVisionModel(config=config)
-        model.to(torch_device)
-        model.eval()
-        with torch.no_grad():
-            result = model(pixel_values)
-        # expected sequence length = num_patches + 1 (we add 1 for the [CLS] token)
-        image_size = (self.image_size, self.image_size)
-        patch_size = (self.patch_size, self.patch_size)
-        num_patches = (image_size[1] // patch_size[1]) * (image_size[0] // patch_size[0])
-        self.parent.assertEqual(result.last_hidden_state.shape, (self.batch_size, num_patches + 1, self.hidden_size))
-        self.parent.assertEqual(result.image_embeds.shape, (self.batch_size, self.projection_dim))
 
     def prepare_config_and_inputs_for_common(self):
         config_and_inputs = self.prepare_config_and_inputs()
