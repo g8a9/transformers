@@ -63,6 +63,7 @@ class SpeechLMProcessor(ProcessorMixin):
     tokenizer_class = "AutoTokenizer"
 
     lang2token = {
+        # Official EU languages
         "bg": "<|bg|>",  # Bulgarian
         "hr": "<|hr|>",  # Croatian
         "cs": "<|cs|>",  # Czech
@@ -88,7 +89,7 @@ class SpeechLMProcessor(ProcessorMixin):
         "es": "<|es|>",  # Spanish
         "sv": "<|sv|>",  # Swedish
         "sq": "<|sq|>",  # Albanian
-        # other languages
+        # Other languages
         "ast": "<|ast|>",  # Asturian
         "eu": "<|eu|>",  # Basque
         "br": "<|br|>",  # Breton
@@ -100,6 +101,7 @@ class SpeechLMProcessor(ProcessorMixin):
         "sc": "<|sc|>",  # Sardinian
         "hsb": "<|hsb|>",  # Sorbian
         "cy": "<|cy|>",  # Welsh
+        "zh": "<|zh|>",  # Chinese
     }
 
     task2token = {
@@ -146,10 +148,13 @@ class SpeechLMProcessor(ProcessorMixin):
                 f"{self.lang2token[tl]}{self.task2token[tt]}"
                 for tl, tt in zip(target_lang, target_task)
             ]
+
+        # We pad becasue because the text preamble might contain some signal
+        # for certain items in the batch or not for others.
         preamble_inputs = self.tokenizer(
             preamble_block,
             padding="longest",
-            return_tensors="pt",
+            padding_side="left",
             return_attention_mask=True,
             add_special_tokens=False,
         )
@@ -158,16 +163,19 @@ class SpeechLMProcessor(ProcessorMixin):
     def __call__(
         self,
         audio: AudioInput,
-        task: Union[str, List[str]],
-        target_lang: Union[str, List[str]],
-        text: Optional[Union[str, List[str], TextInput, PreTokenizedInput]] = None,
-        text_preamble: Optional[Union[str, List[str]]] = None,
+        task: str | list[str],
+        target_lang: str | list[str],
+        text: str | list[str] | TextInput | PreTokenizedInput = None,
+        text_preamble: str | list[str] = None,
         return_labels: bool = False,
         **kwargs,
     ):
         """
         TODO: update docstring
         """
+        if return_labels and text is None:
+            raise ValueError("You need to specify a `text` input to return labels.")
+
         if audio is None and text is None:
             raise ValueError(
                 "You need to specify either an `audio` or `text` input to process."
@@ -220,23 +228,63 @@ class SpeechLMProcessor(ProcessorMixin):
             if not _have_same_length([text, target_lang]):
                 raise ValueError("`text` and `lang` must have the same length")
 
-            tokenized_text = self.tokenizer(text, **output_kwargs["text_kwargs"])
+            # TODO: we should truncate the input text!
+
+            tokenized_text = self.tokenizer(
+                text,
+                padding=False,
+                truncation=False,
+                add_special_tokens=False,
+                return_attention_mask=True,
+            )
+            tokenized_text["input_ids"] = [
+                tt + [self.tokenizer.eos_token_id] for tt in tokenized_text["input_ids"]
+            ]
+            tokenized_text["attention_mask"] = [
+                tt + [1] for tt in tokenized_text["attention_mask"]
+            ]
+
             text_inputs = {
-                "input_ids": torch.cat(
-                    [preamble_inputs["input_ids"], tokenized_text["input_ids"]], dim=1
-                ),
-                "attention_mask": torch.cat(
-                    [preamble_inputs["input_ids"], tokenized_text["attention_mask"]],
-                    dim=1,
-                ),
+                "input_ids": [
+                    pi + tt
+                    for pi, tt in zip(
+                        preamble_inputs["input_ids"], tokenized_text["input_ids"]
+                    )
+                ],
+                "attention_mask": [
+                    pi + tt
+                    for pi, tt in zip(
+                        preamble_inputs["attention_mask"],
+                        tokenized_text["attention_mask"],
+                    )
+                ],
             }
+
+            # text inputs should be in this moment: (tokenized)
+            # <|en|><|transcribe|> 5 I went to the store</s>
+            # <|en|><|transcribe|> 8 I went to the store with my daughter.</s>
+            # here we want to pad everything
+            text_inputs = self.tokenizer.pad(
+                text_inputs,
+                padding_side="left",
+                padding="longest",
+                return_tensors="pt",
+            )
+            # here we should be like this
+            # <pad><pad><pad><pad><|en|><|transcribe|> 5 I went to the store</s>
+            # <|en|><|transcribe|> 8 I went to the store with my daughter.</s>
 
         output_dict = {
             **{f"audio_{k}": v for k, v in audio_inputs.items()},
             **text_inputs,
         }
         if return_labels:
-            output_dict["labels"] = tokenized_text["input_ids"]
+            output_dict["labels"] = self.tokenizer.pad(
+                tokenized_text,
+                padding_side="left",
+                padding="longest",
+                return_tensors="pt",
+            )["input_ids"]
 
         return output_dict
 
