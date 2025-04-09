@@ -44,6 +44,10 @@ def _have_same_length(items: list):
     return all(len(item) == len(items[0]) for item in items)
 
 
+def _make_tensor(x: dict, device, dtype):
+    return {k: torch.tensor(v, device=device, dtype=dtype) for k, v in x.items()}
+
+
 class SpeechLMProcessor(ProcessorMixin):
     r"""
     Constructs a Wav2Vec2-BERT processor which wraps a Wav2Vec2-BERT feature extractor and a Wav2Vec2 CTC tokenizer into a single
@@ -273,6 +277,13 @@ class SpeechLMProcessor(ProcessorMixin):
             # here we should be like this
             # <pad><pad><pad><pad><|en|><|transcribe|> 5 I went to the store</s>
             # <|en|><|transcribe|> 8 I went to the store with my daughter.</s>
+        else:
+            # if we don't have text to learn we are generating, hence create tensors out of the preamble
+            text_inputs = _make_tensor(
+                text_inputs,
+                device=audio_inputs["input_features"].device,
+                dtype=torch.long,
+            )
 
         output_dict = {
             **{f"audio_{k}": v for k, v in audio_inputs.items()},
@@ -287,30 +298,6 @@ class SpeechLMProcessor(ProcessorMixin):
             )["input_ids"]
 
         return output_dict
-
-    #     def pad(self, input_features=None, labels=None, **kwargs):
-    #         """
-    #         If `input_features` is not `None`, this method forwards the `input_features` and `kwargs` arguments to SeamlessM4TFeatureExtractor's [`~SeamlessM4TFeatureExtractor.pad`] to pad the input features.
-    #         If `labels` is not `None`, this method forwards the `labels` and `kwargs` arguments to PreTrainedTokenizer's [`~PreTrainedTokenizer.pad`] to pad the label(s).
-    #         Please refer to the doctsring of the above two methods for more information.
-    #         """
-    #         if input_features is None and labels is None:
-    #             raise ValueError(
-    #                 "You need to specify either an `input_features` or `labels` input to pad."
-    #             )
-
-    #         if input_features is not None:
-    #             input_features = self.feature_extractor.pad(input_features, **kwargs)
-    #         if labels is not None:
-    #             labels = self.tokenizer.pad(labels, **kwargs)
-
-    #         if labels is None:
-    #             return input_features
-    #         elif input_features is None:
-    #             return labels
-    #         else:
-    #             input_features["labels"] = labels["input_ids"]
-    #             return input_features
 
     def batch_decode(self, *args, **kwargs):
         """

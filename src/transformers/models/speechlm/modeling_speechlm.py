@@ -269,9 +269,9 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
     def forward(
         self,
         audio_input_features: torch.FloatTensor,
-        audio_attention_mask: torch.FloatTensor,
         input_ids: torch.FloatTensor,
-        attention_mask: torch.FloatTensor,
+        audio_attention_mask: torch.FloatTensor = None,
+        attention_mask: torch.FloatTensor = None,
         # encoder_outputs: Optional[Tuple[torch.FloatTensor]] = None,  # no need for now
         past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
         # decoder_inputs_embeds: Optional[torch.FloatTensor] = None,  # no need for now
@@ -326,6 +326,10 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
             if hasattr(self, "enc_to_dec_proj"):
                 encoder_hidden_states = self.enc_to_dec_proj(encoder_hidden_states)
 
+            # self.encoder_hidden_states = encoder_hidden_states
+
+        # else:
+        # encoder_hidden_states = self.encoder_hidden_states
         # store the encoder attention mask if we are using cache
         elif use_cache and not hasattr(self, "audio_attention_mask"):
             self.audio_attention_mask = audio_attention_mask
@@ -342,22 +346,35 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
         # extract input embeds from the decoder
         decoder_input_embs = self.decoder.get_input_embeddings()(input_ids)
 
-        # If we are not using the cache, we need to build new inputs for the decoder
+        # If we are not using the cache, or it's the first pass with the cache on.
+        # Hence, we need to build new inputs for the decoder
         if not use_cache or (use_cache and past_key_values is None):
             # prepend audio representations to the text input embeddings
             decoder_input_embs = torch.cat(
                 [encoder_hidden_states, decoder_input_embs], dim=1
             )
-            attention_mask = torch.cat([audio_attention_mask, attention_mask], dim=1)
-        else:
-            attention_mask = torch.cat(
-                [self.audio_attention_mask, attention_mask], dim=1
+            encoder_outputs_mask = torch.ones(
+                encoder_hidden_states.shape[:2],
+                dtype=attention_mask.dtype,
+                device=attention_mask.device,
             )
+
+            if attention_mask is not None:
+                attention_mask = torch.cat(
+                    [encoder_outputs_mask, attention_mask], dim=1
+                )
+        # else:
+        #     if attention_mask is not None:
+        #         attention_mask = torch.cat(
+        #             [self.audio_attention_mask, attention_mask], dim=1
+        #         )
 
         if logits_to_keep == 0:
             logits_to_keep = (
                 labels.shape[1] if labels is not None else input_ids.shape[1]
             )
+
+        # pdb.set_trace()
 
         decoder_outputs = self.decoder(
             inputs_embeds=decoder_input_embs,
