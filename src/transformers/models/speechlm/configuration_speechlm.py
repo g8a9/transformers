@@ -15,6 +15,7 @@ class SpeechLMConfig(PretrainedConfig):
 
     adapter_type: str = "linear"
     num_latents: int = 64
+    has_no_defaults_at_init = True
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -31,12 +32,6 @@ class SpeechLMConfig(PretrainedConfig):
 
         self.encoder = AutoConfig.for_model(encoder_model_type, **encoder_config)
         self.decoder = AutoConfig.for_model(decoder_model_type, **decoder_config)
-
-        # self.decoder.pad_token = "<unk>"
-        # self.decoder.pad_token_id = 0
-        # self.decoder.padding_side = "left"
-        # self.pad_token_id = self.decoder.pad_token_id
-
         self.decoder_start_token_id = self.decoder.bos_token_id
         self.loss_type = "ForCausalLMLoss"
 
