@@ -3,10 +3,9 @@
 
 from typing import Optional, Tuple, Union
 import pdb
-import inspect
 import torch
 from torch import nn
-from torch.nn import CrossEntropyLoss
+import torch.nn.functional as F
 
 from ...configuration_utils import PretrainedConfig
 from ...generation import GenerationMixin
@@ -34,6 +33,24 @@ class SpeechLMPreTrainedModel(PreTrainedModel, GenerationMixin):
         "Wav2Vec2BertAdapterLayer",
         "Wav2Vec2BertEncoderLayer",
     ]
+
+
+# def downsample_attention_mask_conv1d(
+#     attention_mask: torch.Tensor, kernel_size: int, stride: int
+# ) -> torch.LongTensor:
+#     """
+#     attention_mask: (batch_size, seq_len), dtype=torch.long or torch.bool
+#     returns:        (batch_size, new_seq_len), dtype=torch.long
+#     where new_seq_len = floor((seq_len - kernel_size) / kernel_stride) + 1
+#     """
+#     # 1) turn into float for pooling
+#     m = attention_mask.float().unsqueeze(1)  # -> (bs, 1, seq_len)
+#     # 2) apply max‐pool with the same kernel & stride as your conv1d
+#     m_pooled = F.max_pool1d(
+#         m, kernel_size=kernel_size, stride=stride
+#     )  # -> (bs, 1, new_seq_len)
+#     # 3) back to integer mask
+#     return m_pooled.squeeze(1).long()  # -> (bs, new_seq_len)
 
 
 # @add_start_docstrings(SPEECH_ENCODER_DECODER_START_DOCSTRING)
@@ -327,12 +344,25 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
                 encoder_hidden_states = self.enc_to_dec_proj(encoder_hidden_states)
 
             # self.encoder_hidden_states = encoder_hidden_states
+            if audio_attention_mask is not None:
+                encoder_outputs_mask = self.encoder._get_feature_vector_attention_mask(
+                    encoder_hidden_states.shape[1], audio_attention_mask
+                )
+            else:
+                encoder_outputs_mask = torch.ones(
+                    encoder_hidden_states.shape[:2],
+                    dtype=attention_mask.dtype,
+                    device=attention_mask.device,
+                )
+
+            # if use_cache:
+            # self.encoder_outputs_mask = encoder_outputs_mask
 
         # else:
         # encoder_hidden_states = self.encoder_hidden_states
         # store the encoder attention mask if we are using cache
-        elif use_cache and not hasattr(self, "audio_attention_mask"):
-            self.audio_attention_mask = audio_attention_mask
+        # elif use_cache and not hasattr(self, "audio_attention_mask"):
+        # self.audio_attention_mask = audio_attention_mask
 
         # TODO: keeping it here as it might be useful in the future
         # compute correct encoder attention mask
@@ -353,11 +383,11 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
             decoder_input_embs = torch.cat(
                 [encoder_hidden_states, decoder_input_embs], dim=1
             )
-            encoder_outputs_mask = torch.ones(
-                encoder_hidden_states.shape[:2],
-                dtype=attention_mask.dtype,
-                device=attention_mask.device,
-            )
+            # encoder_outputs_mask = torch.ones(
+            #     encoder_hidden_states.shape[:2],
+            #     dtype=attention_mask.dtype,
+            #     device=attention_mask.device,
+            # )
 
             if attention_mask is not None:
                 attention_mask = torch.cat(

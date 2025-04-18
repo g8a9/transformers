@@ -112,7 +112,7 @@ class SpeechLMProcessor(ProcessorMixin):
         "transcribe": "<|transcribe|>",
         "translate": "<|translate|>",
         "summarize": "<|summarize|>",
-        "reply": "<|reply|>",
+        "sqa": "<|reply|>",
     }
 
     @property
