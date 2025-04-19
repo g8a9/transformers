@@ -12,6 +12,8 @@ class SpeechLMConfig(PretrainedConfig):
     sub_configs = {"encoder": AutoConfig, "decoder": AutoConfig}
     is_composition = True
     is_encoder_decoder = False
+    add_pre_adapter: bool = False
+    num_pre_adapter_layes: int = 3
 
     adapter_type: str = "linear"
     num_latents: int = 64

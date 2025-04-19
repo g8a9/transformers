@@ -21,6 +21,8 @@ from ..auto.configuration_auto import AutoConfig
 from ..auto.modeling_auto import AutoModel, AutoModelForCausalLM
 from .configuration_speechlm import SpeechLMConfig
 
+from ..wav2vec2_bert.modeling_wav2vec2_bert import Wav2Vec2BertAdapterLayer
+
 
 logger = logging.get_logger(__name__)
 
@@ -30,27 +32,70 @@ class SpeechLMPreTrainedModel(PreTrainedModel, GenerationMixin):
     _skip_keys_device_placement = ["past_key_values"]
     _no_split_modules = [
         "LlamaDecoderLayer",
+        "SpeechLMPreAdapter",
         "Wav2Vec2BertAdapterLayer",
         "Wav2Vec2BertEncoderLayer",
     ]
 
 
-# def downsample_attention_mask_conv1d(
-#     attention_mask: torch.Tensor, kernel_size: int, stride: int
-# ) -> torch.LongTensor:
-#     """
-#     attention_mask: (batch_size, seq_len), dtype=torch.long or torch.bool
-#     returns:        (batch_size, new_seq_len), dtype=torch.long
-#     where new_seq_len = floor((seq_len - kernel_size) / kernel_stride) + 1
-#     """
-#     # 1) turn into float for pooling
-#     m = attention_mask.float().unsqueeze(1)  # -> (bs, 1, seq_len)
-#     # 2) apply max‐pool with the same kernel & stride as your conv1d
-#     m_pooled = F.max_pool1d(
-#         m, kernel_size=kernel_size, stride=stride
-#     )  # -> (bs, 1, new_seq_len)
-#     # 3) back to integer mask
-#     return m_pooled.squeeze(1).long()  # -> (bs, new_seq_len)
+class SpeechLMPreAdapter(nn.Module):
+    def __init__(self, config):
+
+        super().__init__()
+        # feature dim might need to be down-projected
+        self.proj = nn.Linear(
+            config.encoder.feature_projection_input_dim,
+            config.encoder.output_hidden_size,
+        )
+        self.proj_layer_norm = nn.LayerNorm(
+            config.encoder.output_hidden_size, eps=config.encoder.layer_norm_eps
+        )
+        self.layers = nn.ModuleList(
+            Wav2Vec2BertAdapterLayer(config.encoder)
+            for _ in range(config.num_pre_adapter_layers)
+        )
+        self.layerdrop = config.encoder.layerdrop
+
+        self.kernel_size = config.encoder.adapter_kernel_size
+        self.stride = config.encoder.adapter_stride
+        self.out_proj = nn.Linear(
+            config.encoder.output_hidden_size,
+            config.encoder.feature_projection_input_dim,
+        )
+
+    def _compute_sub_sample_lengths_from_attention_mask(self, seq_lens):
+        if seq_lens is None:
+            return seq_lens
+        pad = self.kernel_size // 2
+        seq_lens = ((seq_lens + 2 * pad - self.kernel_size) / self.stride) + 1
+        return seq_lens.floor()
+
+    def forward(self, hidden_states, attention_mask=None):
+        # down project hidden_states if necessary
+        if self.proj is not None and self.proj_layer_norm is not None:
+            hidden_states = self.proj(hidden_states)
+            hidden_states = self.proj_layer_norm(hidden_states)
+
+        sub_sampled_lengths = None
+        if attention_mask is not None:
+            sub_sampled_lengths = (
+                attention_mask.size(1) - (1 - attention_mask.int()).sum(1)
+            ).to(hidden_states.device)
+
+        for layer in self.layers:
+            layerdrop_prob = torch.rand([])
+            sub_sampled_lengths = self._compute_sub_sample_lengths_from_attention_mask(
+                sub_sampled_lengths
+            )
+            if not self.training or (layerdrop_prob > self.layerdrop):
+                hidden_states = layer(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    sub_sampled_lengths=sub_sampled_lengths,
+                )
+
+        hidden_states = self.out_proj(hidden_states)
+        return hidden_states
 
 
 # @add_start_docstrings(SPEECH_ENCODER_DECODER_START_DOCSTRING)
@@ -153,6 +198,9 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
             raise ValueError(
                 f"The encoder {self.encoder} should not have a LM Head. Please use a model without LM Head"
             )
+
+        if config.add_pre_adapter:
+            self.pre_adapter = SpeechLMPreAdapter(self.config)
 
     def get_encoder(self):
         return self.encoder
@@ -324,6 +372,15 @@ class SpeechLMForConditionalGeneration(SpeechLMPreTrainedModel):
 
         # we assume that if we are using cache then we are caching encoder_outputs
         if not use_cache or (use_cache and past_key_values is None):
+
+            if self.config.add_pre_adapter:
+                audio_input_features = self.pre_adapter(
+                    audio_input_features, attention_mask=audio_attention_mask
+                )
+                audio_attention_mask = self.encoder._get_feature_vector_attention_mask(
+                    audio_input_features.shape[1], audio_attention_mask
+                )
+
             encoder_outputs = self.encoder(
                 audio_input_features,
                 attention_mask=audio_attention_mask,
